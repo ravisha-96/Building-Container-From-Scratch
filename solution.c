@@ -9,23 +9,25 @@
 #include <fcntl.h>
 #include <sys/mount.h>
 #include <error.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/syscall.h>
 
-#define STACK_SIZE (1024 * 1024)    /* Stack size for cloned child */
 
-/* A simple error-handling function: print an error message based
-   on the value in 'errno' and terminate the calling process */
+
+#define STACK_SIZE (1024 * 1024)
+
+   //A simple error-handling function: print an error message based
+   //on the value in 'errno' and terminate the calling process
 
 #define errExit(msg) {perror(msg); exit(EXIT_FAILURE);}
 
-void mount_root_file_system(const char *file_system)
-{
-    mount(file_system,file_system,"ext4",MS_BIND,"");
-    chdir(file_system);
-    const char *old_fs = ".old_fs";
-    mkdir(old_fs,0777);
-    pivot_root(".",old_fs);
-    chdir("/");
-}
+ void mount_root_file_system(const char *file_system){
+ 	//chroot(file_system);
+ 	chroot("./rootfs");
+ 	chdir("/");
+ 	//printf("%s\n", " \n mount_root_file_system completed ");
+ }
 
 void mount_proc_file_system()
 {
@@ -34,21 +36,23 @@ void mount_proc_file_system()
     {
         if (mount("proc", mount_point, "proc", 0, NULL) == -1)
             errExit("mount");
-        printf("Mounting procfs at %s\n", mount_point);
+       // printf("Mounting proc file system at %s\n", mount_point);
     }
+    //printf("\n mount proc file successfull \n");
 }
 
 void set_hostname_uts_namespace(const char *child_host_name)
 {
     struct utsname uts;
-    /* Change hostname in UTS namespace of child */
+    // Change hostname using UTS namespace of child
     if (sethostname(child_host_name, strlen(child_host_name)) == -1)
         errExit("sethostname");
 
-    /* Retrieve and display hostname */
+    // Retrieve and display hostname
     if (uname(&uts) == -1)
         errExit("uname");
-    printf("nodename in child uts namespace: %s\n", uts.nodename);
+
+    //printf("%s\n", " \n hostname successfull \n" );
 }
 
 void assign_ip_and_bring_up_veth(const char *veth){
@@ -91,7 +95,8 @@ void configure_network_namespace_in_parent(char *argv[]){
 	//Provide ip addresses and bring the interfaces up
 	//For parent namespace
 	assign_ip_and_bring_up_veth(veth0);
-	//For new network namespace
+
+	//printf("%s\n", "\n parent network namespace configruation successfull \n");
 }
 
 void configure_network_namespace_in_child(const char *new_nw_namespace)
@@ -103,31 +108,34 @@ void configure_network_namespace_in_child(const char *new_nw_namespace)
     int fd = open(netns_path,O_RDONLY | O_CLOEXEC);
     if(fd == -1)
         errExit("open");
-    int ret_no = setns(fd,0);
+    int returned_value = setns(fd,0);
     // printf("%d\n",temp);
-    if(ret_no == -1)
+    if(returned_value == -1)
         errExit("setns");
     system("ip link set dev lo up");
+    printf("%s", "\n child network configruation successfull \n");
 }
 
 int child_process(void *args)
 {
-    printf("NAMESPACE HANDLER\n");
     char **argv = (char **)args;
-
-    const char *root_file_system = argv[1];
-    mount_root_file_system(root_file_system);
-
-    mount_proc_file_system();
-
-    const char *child_hostname = argv[2];
-    set_hostname_uts_namespace(child_hostname);
 
     const char *child_veth1 = argv[4];
     const char *new_nw_namespace = argv[5];
 
     configure_network_namespace_in_child(new_nw_namespace);
     assign_ip_and_bring_up_veth(child_veth1);
+
+    const char *root_file_system = argv[1];
+    mount_root_file_system(root_file_system);
+
+    const char *child_hostname = argv[2];
+    set_hostname_uts_namespace(child_hostname);
+
+    mount_proc_file_system();
+
+    
+
     execlp("bin/bash","bin/bash",NULL);
     
     return 0;
@@ -145,10 +153,8 @@ int main(int argc, char *argv[])
     }
 
     configure_network_namespace_in_parent(argv);
-    /* Create a child that has its own mount,pid,uts namespace;
-       the child commences execution in child_process() */
 
-    printf("CREATING NEW NAMESPACE\n");
+    //create child process
     child_pid = clone(child_process,
                         child_stack + STACK_SIZE,   /* Points to start of downwardly growing stack */ 
                         CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWUTS | SIGCHLD,
@@ -157,21 +163,19 @@ int main(int argc, char *argv[])
     {
         errExit("clone");
     }
-    printf("PID of child created by clone() is %ld\n", (long) child_pid);
 
-//system("echo 200000000 > /sys/fs/cgroup/memory/demo/memory.limit_in_bytes");
-  //  system("echo 0 > /sys/fs/cgroup/memory/demo/memory.swapiness");
+    system("mkdir /sys/fs/cgroup/memory/demo");
+    system("echo 200000000 > /sys/fs/cgroup/memory/demo/memory.limit_in_bytes");
+    system("echo 0 > /sys/fs/cgroup/memory/demo/memory.swappiness");
     char buffer[1024];
     sprintf(buffer, "echo %d > /sys/fs/cgroup/memory/demo/tasks", child_pid);
     system(buffer);    
-    /* Display the hostname in parent's UTS namespace. This will be 
-       different from the hostname in child's UTS namespace. */
 
     if (uname(&uts) == -1)
         errExit("uname");    
-    printf("nodename in parent uts namespace: %s\n", uts.nodename);
 
-    if (waitpid(child_pid, NULL, 0) == -1)      /* Wait for child */
+    //wait for the child to finish
+    if (waitpid(child_pid, NULL, 0) == -1)      
         errExit("waitpid");
     printf("END\n");
     exit(EXIT_SUCCESS);
